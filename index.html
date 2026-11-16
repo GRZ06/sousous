@@ -646,7 +646,7 @@ function defaults() {
   return {
     v: 3, tx: [], rec: [],
     cats: DEFAULT_CATS.map(c => Object.assign({}, c, { kw: [] })),
-    settings: { mode: 'manual', limit: 3000, save: 0, hide: false },
+    settings: { mode: 'manual', limit: 3000, save: 0, hide: false, open: 'pay' },
     meta: { created: Date.now(), lastExport: 0 }
   };
 }
@@ -724,6 +724,7 @@ function sanitize(d) {
   const save = Math.round(Number(s.save));
   out.settings.save = Number.isFinite(save) && save > 0 ? save : 0;
   out.settings.hide = !!s.hide;
+  out.settings.open = s.open === 'home' ? 'home' : 'pay';
   const m = d.meta || {};
   if (Number.isFinite(m.created)) out.meta.created = m.created;
   if (Number.isFinite(m.lastExport)) out.meta.lastExport = m.lastExport;
@@ -1197,19 +1198,16 @@ function modal(o) {
 }
 
 function applePayModal() {
-  const url = 'webapp://' + location.host + location.pathname + '?amount=MONTANT&merchant=COMMERCANT';
-  const test = location.origin + location.pathname + '?amount=12%2C50&merchant=Uber';
+  const url = 'webapp://' + location.host + location.pathname;
   modal({
     title: 'Raccourci Apple Pay',
     body: '<ol class="steps">' +
       '<li>Dans <b>Raccourcis</b> : Automatisation, <b>+</b>, <b>Wallet</b>. Choisis ta carte et <b>Exécuter immédiatement</b>.</li>' +
       '<li>Action <b>Texte</b> : <b>Montant</b> | <b>Commerçant</b> | <b>Date actuelle</b> (variables de l\'entrée du raccourci, séparées par des barres). Puis action <b>Copier dans le presse-papiers</b>.</li>' +
-      '<li>Action <b>Ouvrir les URL</b> avec cette adresse, MONTANT et COMMERCANT remplacés par les variables :' +
+      '<li>Action <b>Ouvrir les URL</b> avec cette adresse :' +
       '<div class="url-box"><code>' + esc(url) + '</code><button type="button" class="btn btn-ghost btn-small" data-act="copy" data-copy="' + esc(url) + '">' + ico('copy', 16) + 'Copier</button></div></li>' +
-      '<li>Action <b>Attendre</b> 1 seconde, puis duplique <b>Ouvrir les URL</b>. App fermée, iOS ignore le montant au premier appel ; le second arrive app ouverte.</li>' +
-      '<li>Si le formulaire ne s\'ouvre pas, touche <b>Coller le paiement</b> en haut de l\'accueil, puis <b>Coller</b>.</li>' +
-      '</ol><p><button type="button" class="btn btn-ghost btn-block" data-act="clip-test">' + ico('clip', 16) + 'Copier un paiement test</button></p>' +
-      '<p><a class="btn btn-ghost btn-block" href="' + esc(test) + '">' + ico('card', 16) + 'Tester l\'adresse avec 12,50 € chez Uber</a></p>',
+      '<li>Sousous s\'ouvre sur <b>Nouveau paiement</b> : touche <b>Coller le paiement</b>, puis <b>Coller</b>, puis <b>Enregistrer</b>.</li>' +
+      '</ol><p><button type="button" class="btn btn-ghost btn-block" data-act="clip-test">' + ico('clip', 16) + 'Copier un paiement test</button></p>',
     confirm: 'Fermer', cancel: false
   });
 }
@@ -1502,6 +1500,8 @@ function budgetStats() {
 
 /* ---------- Saisie : dépense, revenu, fixe, paiement Apple Pay ---------- */
 let F = null, FORM_KEY = null, CAPTURE = null;
+/* Ouverture de l'app sur « Nouveau paiement » (iOS ignore l'adresse passée par webapp://) */
+let LAUNCH = false;
 
 function recentDescs() {
   const seen = new Set(), out = [];
@@ -1563,7 +1563,8 @@ function initForm(r) {
       desc: c.merchant, cat: c.cat, byUser: !!c.cat, date: c.date || today(), day: new Date().getDate() };
   } else {
     const type = r.q.get('type');
-    F = { mode: 'add', kind: type === 'revenu' ? 'in' : 'out', monthly: type === 'fixe', amount: '', desc: '', cat: type === 'revenu' ? INCOME : null, byUser: type === 'revenu', date: today(), day: new Date().getDate() };
+    F = { mode: 'add', kind: type === 'revenu' ? 'in' : 'out', monthly: type === 'fixe', amount: '', desc: '', cat: type === 'revenu' ? INCOME : null, byUser: type === 'revenu', date: today(), day: new Date().getDate(), launch: LAUNCH && !type };
+    LAUNCH = false;
   }
   FORM_KEY = key;
   if (F.kind === 'out') {
@@ -1574,13 +1575,15 @@ function initForm(r) {
 }
 function viewForm(r) {
   if (!initForm(r)) return null;
-  const title = F.mode === 'pay' ? 'Paiement Apple Pay' : F.mode === 'rec' ? (F.kind === 'in' ? 'Revenu mensuel' : 'Dépense fixe') : F.mode === 'edit' ? 'Modifier' : 'Ajouter';
+  const title = F.mode === 'pay' ? 'Paiement Apple Pay' : F.mode === 'rec' ? (F.kind === 'in' ? 'Revenu mensuel' : 'Dépense fixe') : F.mode === 'edit' ? 'Modifier' : F.launch ? 'Nouveau paiement' : 'Ajouter';
   let err = '';
   if (F.mode === 'pay' && !F.amountOk) err = /^montant$/i.test(F.rawAmount) ? 'Le raccourci envoie le texte MONTANT : remplace-le par la variable Montant.' : 'Montant reçu illisible : « ' + F.rawAmount + ' ».';
   const out = F.kind === 'out';
   return '<div class="form-view">' +
     '<header class="view-head"><button class="icon-btn round" type="button" data-act="back" data-fallback="' + (F.mode === 'rec' ? (F.kind === 'in' ? '#/budget/revenus' : '#/budget/fixes') : '#/') + '" aria-label="Fermer">' + ico('close', 18) + '</button>' +
-    '<h1 class="view-title" tabindex="-1">' + title + '</h1><span class="head-spacer"></span></header>' +
+    '<h1 class="view-title" tabindex="-1">' + title + '</h1>' +
+    (F.mode === 'add' && !F.launch ? '<button type="button" class="icon-btn round" data-act="paste" aria-label="Coller un paiement">' + ico('clip', 18) + '</button>' : '<span class="head-spacer"></span>') + '</header>' +
+    (F.launch ? '<button type="button" class="btn btn-primary btn-block paste-cta" data-act="paste">' + ico('clip', 18) + 'Coller le paiement Apple Pay</button>' : '') +
     (F.mode === 'add' ? '<div class="seg-ctl type-ctl" role="radiogroup" aria-label="Type"><button type="button" role="radio" aria-checked="' + out + '" data-act="kind" data-v="out">Dépense</button>' +
       '<button type="button" role="radio" aria-checked="' + !out + '" data-act="kind" data-v="in">Revenu</button></div>' : '') +
     '<div class="amount-field"><label class="sr-only" for="f-amount">Montant en euros</label>' +
@@ -1683,7 +1686,7 @@ async function saveForm() {
   const day = Math.min(31, Math.max(1, Math.round(Number(F.day)) || 1));
   if (F.monthly && F.mode === 'add' && !desc) return formError('Donne un nom à cette entrée mensuelle.', 'f-desc');
   const date = /^\d{4}-\d{2}-\d{2}$/.test(F.date) ? F.date : today();
-  const mode = F.mode, id = F.id, rid = F.rid, predicted = F.pred ? F.pred.cat : null;
+  const mode = F.mode, id = F.id, rid = F.rid, predicted = F.pred ? F.pred.cat : null, launch = !!F.launch;
 
   /* Doublon probable avec une dépense fixe déjà comptée */
   if (kind === 'out' && !F.monthly && (mode === 'add' || mode === 'pay')) {
@@ -1744,7 +1747,7 @@ async function saveForm() {
   }
   askPersist();
   F = null; FORM_KEY = null;
-  if (mode === 'pay') location.replace('#/'); else goBack();
+  if (mode === 'pay' || launch) location.replace('#/'); else goBack();
 }
 
 async function removeTx(id) {
@@ -1897,6 +1900,11 @@ function viewSettings() {
     '</div>' + budget +
     '<div class="money-row"><label for="s-save">Épargne par mois</label><div class="money-input"><input id="s-save" class="input" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + (s.save ? numInput(s.save) : '') + '"><span>€</span></div></div>' +
     '</section>' +
+    '<section class="card set-card"><h2 class="h2">À l\'ouverture</h2>' +
+    '<div class="seg-ctl" role="radiogroup" aria-label="Écran à l\'ouverture">' +
+    '<button type="button" role="radio" aria-checked="' + (s.open === 'pay') + '" data-act="open" data-v="pay">Nouveau paiement</button>' +
+    '<button type="button" role="radio" aria-checked="' + (s.open === 'home') + '" data-act="open" data-v="home">Accueil</button></div>' +
+    '<p class="hint">Aussi quand tu reviens dans l\'app après 3 minutes ailleurs.</p></section>' +
     '<section class="card rows">' +
     '<button type="button" class="row" data-act="applepay">' + ico('card', 20) + '<span class="grow">Raccourci Apple Pay</span>' + ico('chevR', 16, 'chev') + '</button>' +
     '<div class="row"><span>' + ico(HIDE ? 'eyeOff' : 'eye', 20) + '</span><span class="grow" id="hide-l">Masquer les montants</span>' +
@@ -1921,7 +1929,7 @@ function viewHelp() {
     item('Revenus et dépenses fixes', 'Une entrée « chaque mois » compte tous les mois à partir d\'aujourd\'hui, à son jour d\'échéance. L\'arrêter garde les mois passés intacts. Les fixes apparaissent dans l\'historique à leur date et dans « À venir » sur l\'accueil.') +
     item('Plafonds', 'Un plafond mensuel par catégorie (Budget, Catégories) affiche sa progression et une alerte sur l\'accueil à partir de 90 %.') +
     item('Suggestions', 'La catégorie est devinée sur ton téléphone : mots-clés connus, puis tes propres choix, qui priment. Les saisies répétées deviennent des raccourcis « fréquents », et une dépense vue plusieurs mois de suite est proposée en fixe.') +
-    item('Raccourci Apple Pay', 'Chaque paiement par carte copie le montant et le commerçant, puis ouvre Sousous. Si le formulaire ne s\'ouvre pas tout seul, touche « Coller le paiement » en haut de l\'accueil (ou l\'icône presse-papiers), puis « Coller ».', '<button type="button" class="btn btn-ghost btn-small" data-act="applepay">' + ico('card', 16) + 'Configurer</button>') +
+    item('Raccourci Apple Pay', 'Chaque paiement par carte copie le montant et le commerçant, puis ouvre Sousous sur « Nouveau paiement ». Touche « Coller le paiement », puis « Coller ». Ailleurs, l\'icône presse-papiers fait la même chose.', '<button type="button" class="btn btn-ghost btn-small" data-act="applepay">' + ico('card', 16) + 'Configurer</button>') +
     item('Données', 'Tout reste sur cet appareil, rien n\'est envoyé. Exporte de temps en temps pour garder une copie. L\'œil sur l\'accueil masque les montants.');
 }
 
@@ -2118,11 +2126,12 @@ function markForeground() {
   clearTimeout(fgTimer);
   fgTimer = setTimeout(softRender, FG_WINDOW + 500);
 }
-const pasteFresh = () => !!(DB.meta.clip && FG_AT && Date.now() - FG_AT < FG_WINDOW);
+const pasteFresh = () => !!(DB.settings.open === 'home' && DB.meta.clip && FG_AT && Date.now() - FG_AT < FG_WINDOW);
 function openPayment(c) {
   CAPTURE = { amountRaw: c.amountRaw, cents: c.cents, merchant: c.merchant, cat: null, date: null };
   F = null; FORM_KEY = null;
-  if (route().name === 'paiement') render(); else location.hash = '#/paiement';
+  const rn = route().name;
+  if (rn === 'paiement') render(); else if (rn === 'ajouter') location.replace('#/paiement'); else location.hash = '#/paiement';
 }
 async function pasteCapture() {
   let text;
@@ -2209,7 +2218,10 @@ const ACTIONS = {
     if (kb && window.matchMedia && matchMedia('(pointer: coarse)').matches) kb.focus({ preventScroll: true });
     return 'default';
   },
-  back: el => goBack(el.dataset.fallback),
+  back: el => {
+    if (F && (F.launch || F.mode === 'pay')) { F = null; FORM_KEY = null; location.replace('#/'); return; }
+    goBack(el.dataset.fallback);
+  },
   'hist-month': el => {
     const d = Number(el.dataset.d), now = new Date(), dt = new Date(HIST.y, HIST.m + d, 1);
     if (dt > now) return;
@@ -2270,12 +2282,13 @@ const ACTIONS = {
   applepay: () => applePayModal(),
   copy: el => copyText(el.dataset.copy, el.dataset.msg),
   paste: () => pasteCapture(),
+  open: el => { const v = el.dataset.v === 'home' ? 'home' : 'pay'; commit(db => { db.settings.open = v; }); },
   'clip-test': async () => {
     try { await navigator.clipboard.writeText('12,50 € | Uber | test'); }
     catch (e) { toast('Copie impossible'); return; }
     commit(db => { db.meta.clip = true; db.meta.lastClip = ''; }, { render: false });
     markForeground();
-    toast('Paiement test copié : ferme cette fenêtre, puis touche « Coller le paiement ».', { timeout: 5000 });
+    toast('Paiement test copié : ferme cette fenêtre, puis touche + et l\'icône presse-papiers.', { timeout: 5000 });
   },
   'export-json': () => exportJSON(),
   'export-csv': () => exportCSV(),
@@ -2396,8 +2409,15 @@ window.addEventListener('hashchange', () => { INTERNAL_NAV = true; render(); });
 window.addEventListener('storage', e => { if (e.key === KEY || e.key === null) { DB = readDB(); HIDE = !!DB.settings.hide; invalidate(); softRender(); } });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') { HIDDEN_AT = Date.now(); return; }
-  if (HIDDEN_AT && Date.now() - HIDDEN_AT > 1500) markForeground();
-  DB = readDB(); HIDE = !!DB.settings.hide; invalidate(); softRender();
+  const away = HIDDEN_AT ? Date.now() - HIDDEN_AT : 0;
+  if (away > 1500) markForeground();
+  DB = readDB(); HIDE = !!DB.settings.hide; invalidate();
+  if (away >= 180e3 && DB.settings.open === 'pay' && !isFormRoute(route()) && $('#modal').hidden) {
+    LAUNCH = true; F = null; FORM_KEY = null;
+    location.replace('#/ajouter');
+    return;
+  }
+  softRender();
 });
 window.addEventListener('pageshow', e => { if (e.persisted) { DB = readDB(); invalidate(); softRender(); } });
 function scheduleMidnight() {
@@ -2421,7 +2441,8 @@ function boot() {
   } else if (location.search && /(^|[?&])(amount|montant|merchant)=/i.test(location.search)) {
     history.replaceState(null, '', location.pathname + '#/');
   } else if (!location.hash) {
-    history.replaceState(null, '', location.pathname + location.search + '#/');
+    if (DB.settings.open === 'pay') { LAUNCH = true; history.replaceState(null, '', location.pathname + '#/ajouter'); }
+    else history.replaceState(null, '', location.pathname + location.search + '#/');
   }
   markForeground();
   render();
