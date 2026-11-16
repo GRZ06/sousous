@@ -149,6 +149,7 @@ a { color: inherit; }
 .brand .logo svg { width: 30px; height: 30px; display: block; }
 .top-r { display: flex; align-items: center; gap: 2px; }
 .date { color: var(--muted); font-size: 13.5px; margin-right: 2px; }
+.paste-cta { margin: 6px 0 10px; }
 .alert { margin: 8px 0 0; padding: 10px 12px; border-radius: 12px; background: rgba(242, 179, 61, .12); color: var(--warn); font-size: 13px; }
 
 /* ---------- Jauge ---------- */
@@ -471,6 +472,7 @@ const ICONS = {
   alert: '<path d="M12 4 2.8 19.5h18.4z"/><path d="M12 10v4.2M12 17v.01"/>',
   card: '<rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/><path d="M2.5 10h19M6.5 15h4"/>',
   reset: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/>',
+  clip: '<path d="M9 4.5H7.5a2 2 0 0 0-2 2V19a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V6.5a2 2 0 0 0-2-2H15"/><rect x="9" y="3" width="6" height="3.5" rx="1"/><path d="M9 12h6M9 16h4"/>',
   eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
   eyeOff: '<path d="M3.5 3.5l17 17"/><path d="M10.6 6.1c.5-.1.9-.1 1.4-.1 6 0 9.5 6 9.5 6a16 16 0 0 1-3.1 3.7M6.6 7.4A16 16 0 0 0 2.5 12S6 18 12 18a9.4 9.4 0 0 0 4.3-1"/><path d="M9.9 10a3 3 0 0 0 4.1 4.1"/>',
   /* catégories */
@@ -725,6 +727,8 @@ function sanitize(d) {
   const m = d.meta || {};
   if (Number.isFinite(m.created)) out.meta.created = m.created;
   if (Number.isFinite(m.lastExport)) out.meta.lastExport = m.lastExport;
+  if (m.clip) out.meta.clip = true;
+  if (typeof m.lastClip === 'string') out.meta.lastClip = m.lastClip.slice(0, 300);
   return out;
 }
 
@@ -1199,10 +1203,13 @@ function applePayModal() {
     title: 'Raccourci Apple Pay',
     body: '<ol class="steps">' +
       '<li>Dans <b>Raccourcis</b> : Automatisation, <b>+</b>, <b>Wallet</b>. Choisis ta carte et <b>Exécuter immédiatement</b>.</li>' +
-      '<li>Ajoute l\'action <b>Ouvrir les URL</b> avec cette adresse :' +
+      '<li>Action <b>Texte</b> : <b>Montant</b> | <b>Commerçant</b> | <b>Date actuelle</b> (variables de l\'entrée du raccourci, séparées par des barres). Puis action <b>Copier dans le presse-papiers</b>.</li>' +
+      '<li>Action <b>Ouvrir les URL</b> avec cette adresse, MONTANT et COMMERCANT remplacés par les variables :' +
       '<div class="url-box"><code>' + esc(url) + '</code><button type="button" class="btn btn-ghost btn-small" data-act="copy" data-copy="' + esc(url) + '">' + ico('copy', 16) + 'Copier</button></div></li>' +
-      '<li>Remplace MONTANT par <b>Entrée du raccourci</b>, puis <b>Montant</b>. Remplace COMMERCANT par <b>Commerçant</b>.</li>' +
-      '</ol><p><a class="btn btn-ghost btn-block" href="' + esc(test) + '">' + ico('card', 16) + 'Tester avec 12,50 € chez Uber</a></p>',
+      '<li>Action <b>Attendre</b> 1 seconde, puis duplique <b>Ouvrir les URL</b>. App fermée, iOS ignore le montant au premier appel ; le second arrive app ouverte.</li>' +
+      '<li>Si le formulaire ne s\'ouvre pas, touche <b>Coller le paiement</b> en haut de l\'accueil, puis <b>Coller</b>.</li>' +
+      '</ol><p><button type="button" class="btn btn-ghost btn-block" data-act="clip-test">' + ico('clip', 16) + 'Copier un paiement test</button></p>' +
+      '<p><a class="btn btn-ghost btn-block" href="' + esc(test) + '">' + ico('card', 16) + 'Tester l\'adresse avec 12,50 € chez Uber</a></p>',
     confirm: 'Fermer', cancel: false
   });
 }
@@ -1310,8 +1317,10 @@ function viewHome() {
   const aria = 'Budget du jour : ' + money(spent) + ' dépensés sur ' + money(lim.cents) + '. ' + status + '.';
   return '<header class="top"><h1 class="brand"><span class="logo" aria-hidden="true">' + LOGO_SVG + '</span>Sousous</h1>' +
     '<div class="top-r"><span class="date">' + esc(cap1(DF_SHORT.format(now))) + '</span>' +
+    '<button type="button" class="icon-btn" data-act="paste" aria-label="Coller un paiement">' + ico('clip', 20) + '</button>' +
     '<button type="button" class="icon-btn" data-act="hide" aria-pressed="' + HIDE + '" aria-label="' + (HIDE ? 'Afficher les montants' : 'Masquer les montants') + '">' + ico(HIDE ? 'eyeOff' : 'eye', 20) + '</button></div></header>' +
     (STORAGE_OK ? '' : '<p class="alert">Stockage refusé par le navigateur : rien ne sera conservé.</p>') +
+    (pasteFresh() ? '<button type="button" class="btn btn-primary btn-block paste-cta" data-act="paste">' + ico('clip', 18) + 'Coller le paiement Apple Pay</button>' : '') +
     '<section class="hero" aria-label="Budget du jour">' +
     '<a class="gauge" href="#/reglages"><span class="sr-only">' + esc(aria) + ' Modifier le budget.</span>' + gaugeSVG(spent, lim.cents) + '</a>' +
     '<p class="status ' + st + '">' + ico(st === 'good' ? 'check' : 'alert', 18) + '<span>' + esc(status) + '</span></p>' +
@@ -1912,7 +1921,7 @@ function viewHelp() {
     item('Revenus et dépenses fixes', 'Une entrée « chaque mois » compte tous les mois à partir d\'aujourd\'hui, à son jour d\'échéance. L\'arrêter garde les mois passés intacts. Les fixes apparaissent dans l\'historique à leur date et dans « À venir » sur l\'accueil.') +
     item('Plafonds', 'Un plafond mensuel par catégorie (Budget, Catégories) affiche sa progression et une alerte sur l\'accueil à partir de 90 %.') +
     item('Suggestions', 'La catégorie est devinée sur ton téléphone : mots-clés connus, puis tes propres choix, qui priment. Les saisies répétées deviennent des raccourcis « fréquents », et une dépense vue plusieurs mois de suite est proposée en fixe.') +
-    item('Raccourci Apple Pay', 'Chaque paiement par carte ouvre Sousous avec le montant déjà saisi.', '<button type="button" class="btn btn-ghost btn-small" data-act="applepay">' + ico('card', 16) + 'Configurer</button>') +
+    item('Raccourci Apple Pay', 'Chaque paiement par carte copie le montant et le commerçant, puis ouvre Sousous. Si le formulaire ne s\'ouvre pas tout seul, touche « Coller le paiement » en haut de l\'accueil (ou l\'icône presse-papiers), puis « Coller ».', '<button type="button" class="btn btn-ghost btn-small" data-act="applepay">' + ico('card', 16) + 'Configurer</button>') +
     item('Données', 'Tout reste sur cet appareil, rien n\'est envoyé. Exporte de temps en temps pour garder une copie. L\'œil sur l\'accueil masque les montants.');
 }
 
@@ -2029,13 +2038,14 @@ async function askPersist() {
   PERSIST_ASKED = true;
   try { if (navigator.storage && navigator.storage.persist && !(await navigator.storage.persisted())) await navigator.storage.persist(); } catch (e) { /* facultatif */ }
 }
-async function copyText(s) {
-  try { await navigator.clipboard.writeText(s); toast('Adresse copiée'); return; } catch (e) { /* repli */ }
+async function copyText(s, msg) {
+  msg = msg || 'Adresse copiée';
+  try { await navigator.clipboard.writeText(s); toast(msg); return; } catch (e) { /* repli */ }
   const ta = document.createElement('textarea');
   ta.value = s; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
   document.body.appendChild(ta);
   ta.select();
-  try { document.execCommand('copy'); toast('Adresse copiée'); } catch (e) { toast('Copie impossible'); }
+  try { document.execCommand('copy'); toast(msg); } catch (e) { toast('Copie impossible'); }
   ta.remove();
 }
 
@@ -2070,6 +2080,72 @@ function readCapture() {
   if (cq) { const n = norm(cq); const c = DB.cats.find(x => x.id !== INCOME && (x.id === cq || norm(x.name) === n)); if (c) cat = c.id; }
   const date = q.date && /^\d{4}-\d{2}-\d{2}$/.test(q.date) ? q.date : null;
   return { amountRaw: amountRaw || '', cents: cents && cents > 0 ? cents : null, merchant: merchant.slice(0, 120), cat, date };
+}
+
+/* Repli presse-papiers : iOS ignore les paramètres de webapp:// quand l'app est fermée.
+   Le raccourci copie « Montant | Commerçant | Date » ; l'app le colle en un geste. */
+const AMOUNT_LIKE = /^\s*(€\s*)?\d[\d\s.,\u00A0\u202F'’]*\s*(€|eur|euros?)?\s*$/i;
+function parseClip(text) {
+  const s = String(text == null ? '' : text).trim();
+  if (!s || s.length > 500) return null;
+  let amountRaw, merchant = '';
+  const qi = s.search(/[?&](amount|montant)=/i);
+  if (qi > -1) {
+    const q = parseQuery(s.slice(s.indexOf('?') > -1 && s.indexOf('?') <= qi ? s.indexOf('?') + 1 : qi + 1));
+    amountRaw = q.amount || q.montant || '';
+    merchant = q.merchant || q.marchand || q.commercant || q.description || q.desc || q.label || '';
+  } else {
+    const parts = s.replace(/^sousous\s*[:|]?\s*/i, '').split(/\s*[|\n\r]+\s*/);
+    amountRaw = parts[0] || '';
+    if (!AMOUNT_LIKE.test(amountRaw)) return null;
+    merchant = parts[1] || '';
+  }
+  if (/^(montant|amount)$/i.test(amountRaw)) return null;
+  const cents = parseAmount(amountRaw);
+  if (!cents || cents <= 0 || cents > 100000000) return null;
+  if (/^(commercant|commerçant|merchant)$/i.test(merchant)) merchant = '';
+  return { cents, amountRaw, merchant: merchant.trim().slice(0, 120) };
+}
+/* Même paiement déjà enregistré récemment (URL puis collage, ou double collage) */
+function recentDup(cents, merchant) {
+  const n = clean(norm(merchant)), since = Date.now() - 30 * 60e3;
+  return DB.tx.find(t => t.t >= since && t.a === cents && !isIn(t) && clean(norm(t.desc)) === n) || null;
+}
+let FG_AT = 0, HIDDEN_AT = 0, fgTimer = null;
+const FG_WINDOW = 90e3;
+function markForeground() {
+  FG_AT = Date.now();
+  clearTimeout(fgTimer);
+  fgTimer = setTimeout(softRender, FG_WINDOW + 500);
+}
+const pasteFresh = () => !!(DB.meta.clip && FG_AT && Date.now() - FG_AT < FG_WINDOW);
+function openPayment(c) {
+  CAPTURE = { amountRaw: c.amountRaw, cents: c.cents, merchant: c.merchant, cat: null, date: null };
+  F = null; FORM_KEY = null;
+  if (route().name === 'paiement') render(); else location.hash = '#/paiement';
+}
+async function pasteCapture() {
+  let text;
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.readText) throw Object.assign(new Error('na'), { name: 'NotSupported' });
+    text = await navigator.clipboard.readText();
+  } catch (e) {
+    if (e && e.name === 'NotAllowedError') { toast('Collage annulé : touche « Coller » dans la bulle qui apparaît.', { timeout: 4500 }); return; }
+    toast('Presse-papiers inaccessible : appui long sur le montant, puis Coller.', { timeout: 5000 });
+    location.hash = '#/ajouter';
+    return;
+  }
+  const c = parseClip(text);
+  if (!c) { toast('Aucun paiement dans le presse-papiers.'); return; }
+  const dup = recentDup(c.cents, c.merchant);
+  if (dup || DB.meta.lastClip === text.slice(0, 300)) {
+    const when = dup ? ' à ' + DF_TIME.format(new Date(dup.t)) : '';
+    const ok = await modal({ title: 'Déjà enregistré ?', body: '<p>' + esc(moneyRaw(c.cents) + (c.merchant ? ' chez ' + c.merchant : '')) + ' a déjà été ajouté' + esc(when) + '.</p>', confirm: 'Ajouter quand même' });
+    if (!ok) return;
+  }
+  commit(db => { db.meta.clip = true; db.meta.lastClip = text.slice(0, 300); }, { render: false });
+  FG_AT = 0;
+  openPayment(c);
 }
 
 /* =====================================================================
@@ -2192,7 +2268,15 @@ const ACTIONS = {
   mode: el => { const m = el.dataset.mode; commit(db => { db.settings.mode = m === 'income' ? 'income' : 'manual'; }); },
   hide: () => { commit(db => { db.settings.hide = !db.settings.hide; }); },
   applepay: () => applePayModal(),
-  copy: el => copyText(el.dataset.copy),
+  copy: el => copyText(el.dataset.copy, el.dataset.msg),
+  paste: () => pasteCapture(),
+  'clip-test': async () => {
+    try { await navigator.clipboard.writeText('12,50 € | Uber | test'); }
+    catch (e) { toast('Copie impossible'); return; }
+    commit(db => { db.meta.clip = true; db.meta.lastClip = ''; }, { render: false });
+    markForeground();
+    toast('Paiement test copié : ferme cette fenêtre, puis touche « Coller le paiement ».', { timeout: 5000 });
+  },
   'export-json': () => exportJSON(),
   'export-csv': () => exportCSV(),
   import: () => { const f = $('#import-file'); f.value = ''; f.click(); },
@@ -2278,6 +2362,23 @@ document.addEventListener('change', e => {
     if (b) { b.disabled = DZSEL.size === 0; b.textContent = dzLabel(); }
   } else if (id === 'import-file' && t.files && t.files[0]) importFile(t.files[0]);
 });
+/* Collage manuel du texte du raccourci dans le montant ou la description */
+document.addEventListener('paste', e => {
+  const id = e.target && e.target.id;
+  if (!F || (id !== 'f-amount' && id !== 'f-desc')) return;
+  const text = (e.clipboardData || window.clipboardData || { getData: () => '' }).getData('text');
+  if (!/[|\n?]/.test(text)) return;
+  const c = parseClip(text);
+  if (!c) return;
+  e.preventDefault();
+  F.amount = numInput(c.cents);
+  if (c.merchant) { F.desc = c.merchant; F.byUser = F.mode === 'edit' || F.mode === 'rec'; }
+  const a = $('#f-amount'), d = $('#f-desc');
+  if (a) { a.value = F.amount; fitAmount(a); }
+  if (d) d.value = F.desc;
+  commit(db => { db.meta.clip = true; db.meta.lastClip = text.slice(0, 300); }, { render: false });
+  aiUpdate(false);
+});
 document.addEventListener('focusout', e => {
   if (e.target.id === 'f-amount' && F) {
     const c = parseAmount(F.amount);
@@ -2293,7 +2394,11 @@ document.addEventListener('keydown', e => {
 
 window.addEventListener('hashchange', () => { INTERNAL_NAV = true; render(); });
 window.addEventListener('storage', e => { if (e.key === KEY || e.key === null) { DB = readDB(); HIDE = !!DB.settings.hide; invalidate(); softRender(); } });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { DB = readDB(); HIDE = !!DB.settings.hide; invalidate(); softRender(); } });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') { HIDDEN_AT = Date.now(); return; }
+  if (HIDDEN_AT && Date.now() - HIDDEN_AT > 1500) markForeground();
+  DB = readDB(); HIDE = !!DB.settings.hide; invalidate(); softRender();
+});
 window.addEventListener('pageshow', e => { if (e.persisted) { DB = readDB(); invalidate(); softRender(); } });
 function scheduleMidnight() {
   const n = new Date(), next = new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1, 0, 0, 5);
@@ -2318,6 +2423,7 @@ function boot() {
   } else if (!location.hash) {
     history.replaceState(null, '', location.pathname + location.search + '#/');
   }
+  markForeground();
   render();
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => fitAmount($('#f-amount')));
   scheduleMidnight();
@@ -2326,7 +2432,7 @@ function boot() {
   }
 }
 
-window.__sousous = { parseAmount, parseQuery, predict, norm, clean, plan, monthSums, fixedSuggestions, frequents, fixedMatch, version: VERSION, get db() { return DB; } };
+window.__sousous = { parseAmount, parseQuery, parseClip, predict, norm, clean, plan, monthSums, fixedSuggestions, frequents, fixedMatch, version: VERSION, get db() { return DB; } };
 
 boot();
 })();
