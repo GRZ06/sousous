@@ -278,6 +278,9 @@ input[type="date"].input { display: block; min-width: 0; }
 .seg-ctl { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; border-radius: 12px; background: var(--card-2); }
 .seg-ctl button { min-height: 36px; border: 0; border-radius: 9px; background: none; color: var(--muted); font-size: 13.5px; font-weight: 650; }
 .seg-ctl button[aria-checked="true"] { background: var(--pine); color: #fff; box-shadow: inset 0 0 0 1px rgba(82, 199, 132, .45); }
+.switch-field span small { display: block; margin-top: 2px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.amount-cap { margin: -8px 0 14px; text-align: center; font-size: 12.5px; color: var(--muted); }
+.month-sub { display: flex; align-items: center; justify-content: center; gap: 9px; margin: 0 0 4px; font-size: 13.5px; color: var(--muted); }
 .switch-field { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 13px; border-radius: 13px; background: var(--card); border: 1px solid rgba(82, 199, 132, .09); font-size: 14px; font-weight: 600; }
 .day-input { width: 90px; text-align: center; font-family: var(--f-mono); }
 
@@ -383,6 +386,8 @@ details.values td + td { text-align: right; color: var(--text); }
 .modal-body { color: var(--muted); font-size: 14px; }
 .modal-body p { margin: 8px 0; }
 .modal-card .input { margin-top: 8px; }
+.modal-money { justify-content: flex-start; margin-top: 4px; }
+.modal-money .input { width: 150px; margin-top: 0; text-align: right; font: 600 20px var(--f-mono); letter-spacing: -.02em; }
 .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .modal-actions.stack { display: grid; grid-template-columns: 1fr; gap: 6px; }
 .modal-actions.stack .btn { width: 100%; }
@@ -651,6 +656,14 @@ function defaults() {
   };
 }
 const validMK = s => typeof s === 'string' && /^\d{4}-\d{2}$/.test(s);
+function cleanOv(o) {
+  const out = {};
+  if (o && typeof o === 'object') for (const k of Object.keys(o)) {
+    const v = Math.round(Number(o[k]));
+    if (validMK(k) && Number.isFinite(v) && v > 0 && v <= 1e10) out[k] = v;
+  }
+  return out;
+}
 
 function sanitize(d) {
   const base = defaults();
@@ -691,6 +704,8 @@ function sanitize(d) {
     recIds.add(r.id);
     out.rec.push({
       id: r.id, kind, a, day, start: r.start, end: validMK(r.end) ? r.end : null,
+      vary: typeof r.vary === 'boolean' ? r.vary : kind === 'in',
+      ov: cleanOv(r.ov),
       name: (typeof r.name === 'string' && r.name.trim() ? r.name.trim() : (kind === 'in' ? 'Revenu' : 'Dépense fixe')).slice(0, 60),
       cat: kind === 'in' ? INCOME : (catIds.has(r.cat) && r.cat !== INCOME ? r.cat : 'autres')
     });
@@ -769,6 +784,20 @@ const expenseCats = () => DB.cats.filter(c => c.id !== INCOME);
    6. Mois, revenus, dépenses fixes, budget
    ===================================================================== */
 const recActive = (r, mk) => r.start <= mk && (!r.end || r.end >= mk);
+/* Montant d'un mois : confirmé (ov) sinon montant habituel */
+const recAmt = (r, mk) => (r.ov && r.ov[mk] != null ? r.ov[mk] : r.a);
+const recConfirmed = (r, mk) => !!(r.ov && r.ov[mk] != null);
+const nextMK = mk => monthKey(Number(mk.slice(0, 4)), Number(mk.slice(5)));
+/* Avant de changer le montant habituel : figer les mois passés non confirmés */
+function freezePast(x, untilMk) {
+  x.ov = x.ov || {};
+  for (let m = x.start; m < untilMk && (!x.end || m <= x.end); m = nextMK(m)) if (x.ov[m] == null) x.ov[m] = x.a;
+}
+/* Montants variables échus ce mois-ci, pas encore confirmés */
+function toConfirm() {
+  const mk = curMK(), t = today();
+  return DB.rec.filter(r => r.vary && recActive(r, mk) && dueKey(r, mk) <= t && !recConfirmed(r, mk)).sort((a, b) => a.day - b.day);
+}
 const recOngoing = r => !r.end || r.end >= curMK();
 function dueKey(r, mk) {
   const y = Number(mk.slice(0, 4)), m = Number(mk.slice(5));
@@ -777,7 +806,7 @@ function dueKey(r, mk) {
 function monthSums(y, m) {
   const mk = monthKey(y, m);
   let inc = 0, fixed = 0, vari = 0, n = 0, nFixed = 0;
-  for (const r of DB.rec) if (recActive(r, mk)) { if (r.kind === 'in') inc += r.a; else { fixed += r.a; nFixed++; } }
+  for (const r of DB.rec) if (recActive(r, mk)) { const a = recAmt(r, mk); if (r.kind === 'in') inc += a; else { fixed += a; nFixed++; } }
   for (const t of DB.tx) if (t.d.startsWith(mk)) { if (isIn(t)) inc += t.a; else { vari += t.a; n++; } }
   return { mk, inc, fixed, vari, n, nFixed };
 }
@@ -833,7 +862,7 @@ function monthEntries(y, m) {
     if (!recActive(r, mk)) continue;
     const d = dueKey(r, mk);
     if (d > t) continue;
-    out.push({ id: 'r:' + r.id, rid: r.id, virtual: true, kind: r.kind, a: r.a, d, t: dateOf(d).getTime() + 6 * 3600e3, desc: r.name, cat: r.kind === 'in' ? INCOME : r.cat });
+    out.push({ id: 'r:' + r.id, rid: r.id, virtual: true, kind: r.kind, a: recAmt(r, mk), est: r.vary && !recConfirmed(r, mk), mk, d, t: dateOf(d).getTime() + 6 * 3600e3, desc: r.name, cat: r.kind === 'in' ? INCOME : r.cat });
   }
   for (const x of DB.tx) if (x.d.startsWith(mk)) out.push(x);
   return out;
@@ -850,7 +879,8 @@ function fixedMatch(desc, cents, ongoing) {
     if (!n) continue;
     const sig = n.split(' ').filter(w => w.length >= 3);
     const same = n === c || (sig.length && sig.every(w => toks.has(w)));
-    if (same && Math.abs(cents - r.a) <= r.a * 0.15) return r;
+    const ra = recAmt(r, mk);
+    if (same && Math.abs(cents - ra) <= ra * (r.vary ? 0.3 : 0.15)) return r;
   }
   return null;
 }
@@ -1127,10 +1157,10 @@ function txRowHTML(t, cm, withDay) {
   const c = cm.get(t.cat) || catById(t.cat);
   const income = isIn(t);
   let meta;
-  if (t.virtual) meta = [withDay ? shortDay(t.d) : null, income ? 'Revenu mensuel' : c.name];
+  if (t.virtual) meta = [withDay ? shortDay(t.d) : null, income ? 'Revenu mensuel' : c.name, t.est ? 'à confirmer' : null];
   else meta = [withDay ? shortDay(t.d) : null, income ? 'Revenu' : c.name, DF_TIME.format(new Date(t.t))];
   const title = t.desc || c.name;
-  const href = t.virtual ? '#/recurrent/' + encodeURIComponent(t.rid) : '#/modifier/' + encodeURIComponent(t.id);
+  const href = t.virtual ? '#/mois/' + encodeURIComponent(t.rid) + '/' + t.mk : '#/modifier/' + encodeURIComponent(t.id);
   return '<li class="tx"><a class="tx-link" href="' + href + '">' + tile(c) +
     '<span class="tx-main"><span class="tx-title">' + esc(title) + (t.virtual && !income ? '<span class="tag">Fixe</span>' : '') + '</span>' +
     '<span class="tx-meta">' + esc(meta.filter(Boolean).join(', ')) + '</span></span>' +
@@ -1140,12 +1170,13 @@ function txRowHTML(t, cm, withDay) {
 /* Ligne de modèle mensuel (revenu ou dépense fixe) */
 function recRowHTML(r, cm, opts) {
   const c = r.kind === 'in' ? catById(INCOME) : (cm.get(r.cat) || catById(r.cat));
-  const mk = curMK(), d = dueKey(r, mk), done = d <= today();
-  const meta = (opts && opts.next) ? cap1(DF_DM.format(dateOf(opts.next))) + ', ' + untilLabel(opts.next)
-    : 'Le ' + r.day + (r.kind === 'out' ? (done ? ', prélevé' : ', ' + untilLabel(d)) : (done ? ', reçu' : ', ' + untilLabel(d))) + (r.end ? ', dernier mois' : '');
+  const mk = opts && opts.next ? opts.next.slice(0, 7) : curMK(), d = dueKey(r, mk), done = d <= today();
+  const pending = r.vary && !recConfirmed(r, mk);
+  const meta = (opts && opts.next) ? cap1(DF_DM.format(dateOf(opts.next))) + ', ' + untilLabel(opts.next) + (pending ? ', prévu' : '')
+    : 'Le ' + r.day + (done ? (pending ? ', à confirmer' : r.kind === 'out' ? ', prélevé' : ', reçu') : ', ' + untilLabel(d) + (pending ? ', prévu' : '')) + (r.end ? ', dernier mois' : '');
   return '<li class="tx"><a class="tx-link" href="#/recurrent/' + encodeURIComponent(r.id) + '">' + tile(c) +
     '<span class="tx-main"><span class="tx-title">' + esc(r.name) + '</span><span class="tx-meta">' + esc(meta) + '</span></span>' +
-    '<span class="tx-amt' + (r.kind === 'in' ? ' pos' : '') + '">' + (r.kind === 'in' ? '+' : '') + money(r.a) + '</span></a>' +
+    '<span class="tx-amt' + (r.kind === 'in' ? ' pos' : '') + '">' + (r.kind === 'in' ? '+' : '') + money(recAmt(r, mk)) + '</span></a>' +
     (opts && opts.noDel ? '<span style="width:14px"></span>' : '<button type="button" class="tx-del" data-act="stop-rec" data-id="' + esc(r.id) + '" aria-label="Arrêter ' + esc(r.name) + '">' + ico('trash', 18) + '</button>') + '</li>';
 }
 
@@ -1172,6 +1203,7 @@ function modal(o) {
       '<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="m-title">' +
       '<h2 id="m-title" class="h2">' + esc(o.title) + '</h2><div class="modal-body">' + (o.body || '') + '</div>' +
       (o.typed ? '<input class="input" id="m-typed" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Confirmation" placeholder="' + esc(o.typed) + '">' : '') +
+      (o.field ? '<div class="money-input modal-money"><input class="input" id="m-field" type="text" inputmode="decimal" autocomplete="off" aria-label="' + esc(o.field.label) + '" value="' + esc(o.field.value) + '"><span>€</span></div>' : '') +
       (alt ? '<div class="modal-actions stack">' + ok + alt + cancel + '</div></div>' : '<div class="modal-actions">' + cancel + ok + '</div></div>');
     typoDom(root);
     root.hidden = false;
@@ -1187,12 +1219,17 @@ function modal(o) {
     root.onclick = e => {
       const b = e.target.closest('[data-m]');
       if (!b || b.disabled) return;
-      close(b.dataset.m === 'ok' ? true : b.dataset.m === 'alt' ? 'alt' : false);
+      const f = $('#m-field');
+      close(b.dataset.m === 'ok' ? (f ? f.value : true) : b.dataset.m === 'alt' ? 'alt' : false);
     };
     if (o.typed) {
       const inp = $('#m-typed'), okb = root.querySelector('[data-m="ok"]');
       inp.oninput = () => { okb.disabled = inp.value.trim().toLowerCase() !== o.typed.toLowerCase(); };
       setTimeout(() => inp.focus(), 40);
+    } else if (o.field) {
+      const inp = $('#m-field');
+      inp.onfocus = () => setTimeout(() => inp.select(), 0);
+      inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); close(inp.value); } };
     } else setTimeout(() => { const b = root.querySelector('[data-m="ok"]'); if (b) b.focus(); }, 40);
   });
 }
@@ -1301,6 +1338,13 @@ function viewHome() {
   const up = upcoming(3);
   const upBlock = up.length ? '<div class="sec-head"><h2 class="h2">À venir</h2><a class="link" href="#/budget/fixes">Fixes</a></div>' +
     '<ul class="card list">' + up.map(u => recRowHTML(u.r, cm, { next: u.d, noDel: true })).join('') + '</ul>' : '';
+  const tc = toConfirm(), mkNow = curMK();
+  const tcBlock = tc.length ? '<div class="sec-head"><h2 class="h2">À confirmer</h2></div><ul class="card list">' + tc.map(r => {
+    const c = r.kind === 'in' ? catById(INCOME) : (cm.get(r.cat) || catById(r.cat));
+    return '<li class="tx"><a class="tx-link" href="#/mois/' + encodeURIComponent(r.id) + '/' + mkNow + '">' + tile(c) +
+      '<span class="tx-main"><span class="tx-title">' + esc(r.name) + '</span><span class="tx-meta">Prévu ' + money(r.a) + ', le ' + r.day + '</span></span>' +
+      '<span class="btn btn-ghost btn-small tx-btn">Confirmer</span></a></li>';
+  }).join('') + '</ul>' : '';
   const al = capAlerts();
   const alBlock = al.length ? '<div class="sec-head"><h2 class="h2">À surveiller</h2></div><ul class="card list">' + al.map(a =>
     '<li class="tx"><a class="tx-link" href="#/historique?c=' + encodeURIComponent(a.c.id) + '">' + tile(a.c) +
@@ -1325,7 +1369,7 @@ function viewHome() {
     '<p class="mode">' + esc(modeLine) + (outside > 0 ? ', ' + money(outside) + ' hors budget' : '') + '</p>' +
     '</section>' +
     '<section class="grid2" aria-label="Mois en cours">' + cards.join('') + '</section>' +
-    alBlock + upBlock +
+    tcBlock + alBlock + upBlock +
     '<div class="sec-head"><h2 class="h2">Récent</h2>' + (recent.length ? '<a class="link" href="#/historique">Tout voir</a>' : '') + '</div>' + recentBody;
 }
 
@@ -1554,7 +1598,7 @@ function initForm(r) {
   } else if (r.name === 'recurrent') {
     const x = DB.rec.find(z => z.id === r.arg);
     if (!x) { toast("Cette entrée n'existe plus."); location.replace('#/budget'); return false; }
-    F = { mode: 'rec', rid: x.id, kind: x.kind, monthly: true, amount: numInput(x.a), desc: x.name, cat: x.kind === 'in' ? INCOME : x.cat, byUser: true, date: today(), day: x.day };
+    F = { mode: 'rec', rid: x.id, kind: x.kind, monthly: true, amount: numInput(x.a), desc: x.name, cat: x.kind === 'in' ? INCOME : x.cat, byUser: true, date: today(), day: x.day, vary: !!x.vary };
   } else if (r.name === 'paiement') {
     if (!CAPTURE) { location.replace('#/ajouter'); return false; }
     const c = CAPTURE;
@@ -1563,7 +1607,7 @@ function initForm(r) {
       desc: c.merchant, cat: c.cat, byUser: !!c.cat, date: c.date || today(), day: new Date().getDate() };
   } else {
     const type = r.q.get('type');
-    F = { mode: 'add', kind: type === 'revenu' ? 'in' : 'out', monthly: type === 'fixe', amount: '', desc: '', cat: type === 'revenu' ? INCOME : null, byUser: type === 'revenu', date: today(), day: new Date().getDate(), launch: LAUNCH && !type };
+    F = { mode: 'add', kind: type === 'revenu' ? 'in' : 'out', monthly: type === 'fixe', amount: '', desc: '', cat: type === 'revenu' ? INCOME : null, byUser: type === 'revenu', date: today(), day: new Date().getDate(), launch: LAUNCH && !type, vary: type === 'revenu' };
     LAUNCH = false;
   }
   FORM_KEY = key;
@@ -1572,6 +1616,15 @@ function initForm(r) {
     if (!F.byUser) F.cat = F.pred ? F.pred.cat : null;
   } else F.pred = null;
   return true;
+}
+/* Fiche d'un revenu mensuel ou d'un fixe : montant de ce mois-ci */
+function monthRowHTML() {
+  const x = DB.rec.find(z => z.id === F.rid), mk = curMK();
+  if (!x || !recActive(x, mk)) return '';
+  const due = dueKey(x, mk) <= today(), pending = x.vary && !recConfirmed(x, mk);
+  const st = !due ? 'prévu' : pending ? 'à confirmer' : x.kind === 'in' ? 'reçu' : 'prélevé';
+  return '<div class="field"><div class="switch-field"><span>' + esc(cap1(DF_MONTHN.format(new Date()))) + ' : <b class="mono">' + money(recAmt(x, mk)) + '</b> ' + st + '</span>' +
+    '<a class="btn btn-ghost btn-small" href="#/mois/' + encodeURIComponent(x.id) + '/' + mk + '">Ajuster</a></div></div>';
 }
 function viewForm(r) {
   if (!initForm(r)) return null;
@@ -1589,6 +1642,7 @@ function viewForm(r) {
     '<div class="amount-field"><label class="sr-only" for="f-amount">Montant en euros</label>' +
     '<input id="f-amount" class="amount-input" type="text" inputmode="decimal" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="next" placeholder="0,00" value="' + esc(F.amount) + '" aria-describedby="f-err">' +
     '<span class="amount-cur" aria-hidden="true">€</span></div>' +
+    '<p id="amt-cap" class="amount-cap"' + (F.monthly ? '' : ' hidden') + '>Montant habituel</p>' +
     '<p id="f-err" class="err" role="alert"' + (err ? '' : ' hidden') + '>' + esc(err) + '</p>' +
     '<div id="freq-box" data-k="' + freqKey() + '">' + freqHTML() + '</div>' +
     '<div class="field"><label class="flabel" for="f-desc" id="f-desc-l">' + (F.monthly ? 'Nom' : 'Description') + '</label>' +
@@ -1599,6 +1653,9 @@ function viewForm(r) {
     '<fieldset class="field"><legend class="flabel">Catégorie</legend><div class="chips" role="radiogroup" aria-label="Catégorie">' + expenseCats().map(chipHTML).join('') + '</div></fieldset></div>' +
     (F.mode === 'add' ? '<div class="field"><div class="switch-field"><span id="f-mon-l">' + (out ? 'Dépense fixe, chaque mois' : 'Revenu mensuel') + '</span>' +
       '<button type="button" class="switch" role="switch" aria-labelledby="f-mon-l" aria-checked="' + F.monthly + '" data-act="monthly"><span></span></button></div></div>' : '') +
+    '<div class="field" id="vary-box"' + (F.monthly ? '' : ' hidden') + '><div class="switch-field"><span id="f-vary-l">Montant variable<small>Tu confirmes le montant exact chaque mois.</small></span>' +
+      '<button type="button" class="switch" role="switch" aria-labelledby="f-vary-l" aria-checked="' + !!F.vary + '" data-act="vary"><span></span></button></div></div>' +
+    (F.mode === 'rec' ? monthRowHTML() : '') +
     '<div class="field" id="day-box"' + (F.monthly ? '' : ' hidden') + '><label class="flabel" for="f-day">Jour du mois</label>' +
     '<input id="f-day" class="input day-input" type="number" inputmode="numeric" min="1" max="31" value="' + F.day + '"></div>' +
     '<div class="field" id="date-box"' + (F.monthly ? ' hidden' : '') + '><label class="flabel" for="f-date">Date</label>' +
@@ -1636,6 +1693,10 @@ function syncForm() {
   if (sw) sw.setAttribute('aria-checked', String(!!F.monthly));
   if ($('#f-mon-l')) $('#f-mon-l').textContent = out ? 'Dépense fixe, chaque mois' : 'Revenu mensuel';
   if ($('#day-box')) $('#day-box').hidden = !F.monthly;
+  if ($('#vary-box')) $('#vary-box').hidden = !F.monthly;
+  if ($('#amt-cap')) $('#amt-cap').hidden = !F.monthly;
+  const vs = $('[data-act="vary"]');
+  if (vs) vs.setAttribute('aria-checked', String(!!F.vary));
   if ($('#date-box')) $('#date-box').hidden = !!F.monthly;
   if ($('#f-desc-l')) $('#f-desc-l').textContent = F.monthly ? 'Nom' : 'Description';
   const fb = $('#freq-box');
@@ -1697,22 +1758,16 @@ async function saveForm() {
     }
   }
   if (mode === 'rec') {
-    /* Montant, jour ou catégorie modifiés : les mois passés gardent l'ancienne valeur */
-    let split = false;
+    /* Nouveau montant habituel : les mois passés gardent leur montant */
+    let frozen = false;
+    const vary = !!F.vary;
     commit(db => {
       const x = db.rec.find(z => z.id === rid);
       if (!x) return;
-      const mk = curMK(), name = desc || x.name;
-      const changed = x.a !== cents || x.day !== day || x.cat !== cat;
-      if (changed && x.start < mk && (!x.end || x.end >= mk)) {
-        const n = new Date();
-        db.rec.push({ id: uid(), kind: x.kind, a: cents, name, cat, day, start: mk, end: x.end });
-        x.end = monthKey(n.getFullYear(), n.getMonth() - 1);
-        x.name = name;
-        split = true;
-      } else Object.assign(x, { a: cents, name, cat, day });
+      if (x.a !== cents && x.start < curMK()) { freezePast(x, curMK()); frozen = true; }
+      Object.assign(x, { a: cents, name: desc || x.name, cat, day, vary });
     }, { render: false });
-    toast(split ? 'Enregistré, à partir de ce mois-ci' : 'Enregistré');
+    toast(frozen ? 'Enregistré, à partir de ce mois-ci' : 'Enregistré');
     F = null; FORM_KEY = null;
     return goBack(kind === 'in' ? '#/budget/revenus' : '#/budget/fixes');
   }
@@ -1735,7 +1790,10 @@ async function saveForm() {
   if (F.monthly) {
     const seen = paidThisMonth(kind, desc, cents), n = new Date();
     const start = seen ? monthKey(n.getFullYear(), n.getMonth() + 1) : curMK();
-    commit(db => { db.rec.push({ id: uid(), kind, a: cents, name: desc, cat, day, start, end: null }); }, { render: false });
+    const vary = !!F.vary;
+    const ov = {};
+    if (vary && start === curMK() && dueKey({ day }, start) <= today()) ov[start] = cents;
+    commit(db => { db.rec.push({ id: uid(), kind, a: cents, name: desc, cat, day, start, end: null, vary, ov }); }, { render: false });
     const e = kind === 'in' ? '' : 'e';
     toast((kind === 'in' ? 'Revenu mensuel ajouté' : 'Dépense fixe ajoutée') + (seen ? ', compté' + e + ' dès ' + DF_MONTHN.format(dateOf(start + '-01')) + ' (déjà saisi' + e + ' ce mois-ci)' : ''), { timeout: seen ? 5000 : 3000 });
   } else {
@@ -1796,6 +1854,62 @@ async function stopRec(id) {
     onAction: () => commit(db => { db.rec = db.rec.filter(x => x.id !== snap.id).concat([snap]); })
   });
   return true;
+}
+
+/* ---------- Montant d'un mois (revenu ou fixe variable) ---------- */
+let MF = null, MF_KEY = null;
+function viewMonth(r) {
+  const x = DB.rec.find(z => z.id === r.arg);
+  if (!x) { toast("Cette entrée n'existe plus."); location.replace('#/budget'); return null; }
+  const mk = validMK(r.arg2) ? r.arg2 : curMK(), key = x.id + '/' + mk;
+  if (MF_KEY !== key || !MF) { MF = { amount: numInput(recAmt(x, mk)), keep: false }; MF_KEY = key; }
+  const has = recConfirmed(x, mk), d = dueKey(x, mk);
+  const c = x.kind === 'in' ? catById(INCOME) : catById(x.cat);
+  const fb = x.kind === 'in' ? '#/budget/revenus' : '#/budget/fixes';
+  const mName = DF_MONTHN.format(dateOf(mk + '-01'));
+  return '<div class="form-view">' +
+    '<header class="view-head"><button class="icon-btn round" type="button" data-act="back" data-fallback="' + fb + '" aria-label="Fermer">' + ico('close', 18) + '</button>' +
+    '<h1 class="view-title" tabindex="-1">' + esc(x.name) + '</h1><span class="head-spacer"></span></header>' +
+    '<p class="month-sub">' + tile(c) + '<span>' + esc(cap1(DF_MONTH.format(dateOf(mk + '-01'))) + ', ' + (x.kind === 'in' ? 'versé' : 'prélevé') + ' le ' + Number(d.slice(8))) + '</span></p>' +
+    '<div class="amount-field"><label class="sr-only" for="m-amount">Montant de ' + esc(mName) + ' en euros</label>' +
+    '<input id="m-amount" class="amount-input" type="text" inputmode="decimal" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done" placeholder="0,00" value="' + esc(MF.amount) + '" aria-describedby="f-err">' +
+    '<span class="amount-cur" aria-hidden="true">€</span></div>' +
+    '<p class="amount-cap">' + (has ? 'Montant confirmé' : 'Montant habituel ' + moneyRaw(x.a) + ', à confirmer') + '</p>' +
+    '<p id="f-err" class="err" role="alert" hidden></p>' +
+    '<div class="field"><div class="switch-field"><span id="mf-keep-l">Garder pour les mois suivants<small>Devient le montant habituel.</small></span>' +
+    '<button type="button" class="switch" role="switch" aria-labelledby="mf-keep-l" aria-checked="' + MF.keep + '" data-act="mf-keep"><span></span></button></div></div>' +
+    '<p class="add-row"><a class="btn btn-ghost btn-block" href="#/recurrent/' + encodeURIComponent(x.id) + '">Modifier ' + (x.kind === 'in' ? 'le revenu mensuel' : 'la dépense fixe') + '</a></p>' +
+    '<div class="form-actions"><div class="form-actions-in">' +
+    '<button type="button" class="btn btn-primary btn-block" data-act="mf-save">Enregistrer pour ' + esc(mName) + '</button>' +
+    (has ? '<button type="button" class="btn btn-text" data-act="mf-reset">Revenir au montant habituel</button>' : '') +
+    '</div></div></div>';
+}
+function saveMonth() {
+  const r = route(), mk = validMK(r.arg2) ? r.arg2 : curMK(), id = r.arg;
+  const cents = parseAmount(MF.amount);
+  if (!cents || cents <= 0) return formError('Entre un montant supérieur à 0 €.', 'm-amount');
+  if (cents > 100000000) return formError('Montant trop élevé : 1 000 000 € maximum.', 'm-amount');
+  const keep = MF.keep;
+  let kind = 'in';
+  commit(db => {
+    const x = db.rec.find(z => z.id === id);
+    if (!x) return;
+    kind = x.kind;
+    x.ov = x.ov || {};
+    x.ov[mk] = cents;
+    if (keep && x.a !== cents) { freezePast(x, mk); x.a = cents; }
+  }, { render: false });
+  toast('Montant de ' + DF_MONTHN.format(dateOf(mk + '-01')) + ' : ' + moneyRaw(cents) + (keep ? ', gardé pour la suite' : ''));
+  MF = null; MF_KEY = null;
+  goBack(kind === 'in' ? '#/budget/revenus' : '#/budget/fixes');
+}
+function resetMonth() {
+  const r = route(), mk = validMK(r.arg2) ? r.arg2 : curMK(), id = r.arg;
+  let kind = 'in';
+  commit(db => { const x = db.rec.find(z => z.id === id); if (x && x.ov) { kind = x.kind; delete x.ov[mk]; } }, { render: false });
+  toast('Montant habituel rétabli');
+  MF = null; MF_KEY = null;
+  goBack(kind === 'in' ? '#/budget/revenus' : '#/budget/fixes');
 }
 
 /* ---------- Catégorie ---------- */
@@ -1927,6 +2041,7 @@ function viewHelp() {
     item('Budget du jour', 'La jauge compare tes dépenses du jour à ta limite. Une catégorie dont « Budget du jour » est coupé n\'y compte pas, mais reste dans le total du mois. Les dépenses fixes n\'y comptent jamais : elles sont réservées sur le mois.') +
     item('Mode automatique', 'Revenus du mois, moins dépenses fixes et épargne, moins ce que tu as déjà dépensé avant aujourd\'hui, divisé par les jours restants. Dépenser plus aujourd\'hui baisse la limite de demain.') +
     item('Revenus et dépenses fixes', 'Une entrée « chaque mois » compte tous les mois à partir d\'aujourd\'hui, à son jour d\'échéance. L\'arrêter garde les mois passés intacts. Les fixes apparaissent dans l\'historique à leur date et dans « À venir » sur l\'accueil.') +
+    item('Montants variables', 'Pour un salaire ou une facture qui change un peu chaque mois : active « Montant variable ». Le montant habituel sert d\'estimation, puis, le jour venu, une fenêtre te demande le montant exact à chaque ouverture de l\'app tant que ce n\'est pas fait (« Plus tard » la repousse à la prochaine ouverture). Un mois passé se corrige en touchant la ligne dans l\'historique.') +
     item('Plafonds', 'Un plafond mensuel par catégorie (Budget, Catégories) affiche sa progression et une alerte sur l\'accueil à partir de 90 %.') +
     item('Suggestions', 'La catégorie est devinée sur ton téléphone : mots-clés connus, puis tes propres choix, qui priment. Les saisies répétées deviennent des raccourcis « fréquents », et une dépense vue plusieurs mois de suite est proposée en fixe.') +
     item('Raccourci Apple Pay', 'Chaque paiement par carte copie le montant et le commerçant, puis ouvre Sousous sur « Nouveau paiement ». Touche « Coller le paiement », puis « Coller ». Ailleurs, l\'icône presse-papiers fait la même chose.', '<button type="button" class="btn btn-ghost btn-small" data-act="applepay">' + ico('card', 16) + 'Configurer</button>') +
@@ -2001,6 +2116,7 @@ function exportCSV() {
   }
   for (const r of DB.rec) {
     rows.push([r.kind === 'in' ? 'revenu mensuel' : 'depense fixe', 'jour ' + r.day + ' depuis ' + r.start + (r.end ? ' jusqu\'a ' + r.end : ''), '', dec(r.a), r.kind === 'in' ? 'Revenus' : ((cm.get(r.cat) || {}).name || r.cat), r.name, '']);
+    for (const mk of Object.keys(r.ov || {}).sort()) rows.push([r.kind === 'in' ? 'revenu mensuel (mois)' : 'depense fixe (mois)', mk, '', dec(r.ov[mk]), r.kind === 'in' ? 'Revenus' : ((cm.get(r.cat) || {}).name || r.cat), r.name, '']);
   }
   const csv = '\uFEFF' + rows.map(r => r.map(csvCell).join(';')).join('\r\n');
   shareOrDownload(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'sousous-' + today() + '.csv');
@@ -2090,6 +2206,29 @@ function readCapture() {
   return { amountRaw: amountRaw || '', cents: cents && cents > 0 ? cents : null, merchant: merchant.slice(0, 120), cat, date };
 }
 
+/* Confirmation des montants variables : une fois par ouverture de l'app, sur l'accueil */
+let PROMPT_PENDING = false;
+async function promptConfirm() {
+  if (!PROMPT_PENDING || route().name !== '' || !$('#modal').hidden) return;
+  PROMPT_PENDING = false;
+  const mk = curMK(), mName = DF_MONTHN.format(new Date());
+  for (const r of toConfirm()) {
+    if (route().name !== '' || !$('#modal').hidden) return;
+    const verb = r.kind === 'in' ? 'reçu' : 'prélevé';
+    const v = await modal({
+      title: r.name + ' ' + verb + ' ?',
+      body: '<p>Montant exact de ' + esc(mName) + ' (' + (r.kind === 'in' ? 'versé' : 'prélevé') + ' le ' + r.day + ', habituel ' + esc(moneyRaw(r.a)) + ') :</p>',
+      field: { label: 'Montant de ' + mName + ' en euros', value: numInput(r.a) },
+      confirm: 'Confirmer', cancel: 'Plus tard'
+    });
+    if (v === false) return;
+    const cents = parseAmount(v);
+    if (!cents || cents <= 0 || cents > 100000000) { toast('Montant invalide : confirme-le depuis « À confirmer ».'); return; }
+    commit(db => { const x = db.rec.find(z => z.id === r.id); if (x) { x.ov = x.ov || {}; x.ov[mk] = cents; } });
+    toast(r.name + ' de ' + mName + ' : ' + moneyRaw(cents));
+  }
+}
+
 /* Repli presse-papiers : iOS ignore les paramètres de webapp:// quand l'app est fermée.
    Le raccourci copie « Montant | Commerçant | Date » ; l'app le colle en un geste. */
 const AMOUNT_LIKE = /^\s*(€\s*)?\d[\d\s.,\u00A0\u202F'’]*\s*(€|eur|euros?)?\s*$/i;
@@ -2160,16 +2299,16 @@ async function pasteCapture() {
 /* =====================================================================
    12. Routeur et rendu
    ===================================================================== */
-const ROUTES = { '': viewHome, historique: viewHistory, ajouter: viewForm, modifier: viewForm, paiement: viewForm, recurrent: viewForm, budget: viewBudget, categorie: viewCatForm, reglages: viewSettings, aide: viewHelp, effacer: viewErase };
+const ROUTES = { '': viewHome, historique: viewHistory, ajouter: viewForm, modifier: viewForm, paiement: viewForm, recurrent: viewForm, mois: viewMonth, budget: viewBudget, categorie: viewCatForm, reglages: viewSettings, aide: viewHelp, effacer: viewErase };
 const FORM_ROUTES = ['ajouter', 'modifier', 'paiement', 'recurrent'];
 function route() {
   const h = location.hash.replace(/^#\/?/, '');
   const qi = h.indexOf('?');
   const path = qi > -1 ? h.slice(0, qi) : h, qs = qi > -1 ? h.slice(qi + 1) : '';
   const parts = path.split('/').filter(Boolean);
-  return { name: parts[0] || '', arg: parts[1] ? safeDecode(parts[1]) : null, q: new URLSearchParams(qs) };
+  return { name: parts[0] || '', arg: parts[1] ? safeDecode(parts[1]) : null, arg2: parts[2] ? safeDecode(parts[2]) : null, q: new URLSearchParams(qs) };
 }
-const isFormRoute = r => FORM_ROUTES.includes(r.name) || r.name === 'categorie' || r.name === 'effacer';
+const isFormRoute = r => FORM_ROUTES.includes(r.name) || r.name === 'categorie' || r.name === 'effacer' || r.name === 'mois';
 const TAB_OF = { '': '', historique: 'historique', budget: 'budget', reglages: 'reglages', aide: 'reglages' };
 
 let LAST_KEY = null;
@@ -2178,6 +2317,7 @@ function render() {
   const fn = Object.prototype.hasOwnProperty.call(ROUTES, r.name) ? ROUTES[r.name] : viewHome;
   if (!FORM_ROUTES.includes(r.name)) { F = null; FORM_KEY = null; }
   if (r.name !== 'categorie') { CF = null; CF_KEY = null; }
+  if (r.name !== 'mois') { MF = null; MF_KEY = null; }
   const html = fn(r);
   if (html == null) return;
   document.body.classList.toggle('is-form', isFormRoute(r));
@@ -2185,16 +2325,17 @@ function render() {
   view.innerHTML = html;
   typoDom(view);
   fitAmount($('#f-amount'));
+  fitAmount($('#m-amount'));
   const tab = TAB_OF[r.name];
   $$('#tabbar .tab[data-tab]').forEach(a => { if (a.dataset.tab === tab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
-  const key = r.name + '/' + (r.arg || '');
+  const key = r.name + '/' + (r.arg || '') + (r.arg2 ? '/' + r.arg2 : '');
   if (key !== LAST_KEY) {
     const changed = LAST_KEY !== null;
     const sameView = LAST_KEY && LAST_KEY.split('/')[0] === r.name && r.name === 'budget';
     LAST_KEY = key;
     if (!sameView) window.scrollTo(0, 0);
-    if (r.name === 'ajouter') {
-      const a = $('#f-amount');
+    if (r.name === 'ajouter' || r.name === 'mois') {
+      const a = $('#f-amount') || $('#m-amount');
       if (a) a.focus({ preventScroll: true });
       const kb = $('#kb-proxy');
       if (kb && document.activeElement === kb) kb.blur();
@@ -2203,7 +2344,7 @@ function render() {
       if (h) h.focus({ preventScroll: true });
     }
   }
-  if (r.name === '') sweepGauge();
+  if (r.name === '') { sweepGauge(); if (PROMPT_PENDING) setTimeout(promptConfirm, 350); }
 }
 function softRender() { if (!isFormRoute(route())) render(); }
 
@@ -2234,11 +2375,16 @@ const ACTIONS = {
     F.kind = el.dataset.v === 'in' ? 'in' : 'out';
     F.cat = F.kind === 'in' ? INCOME : null;
     F.byUser = F.kind === 'in';
+    F.vary = F.kind === 'in';
     aiUpdate(false);
     const d = $('#f-desc');
     if (d) d.placeholder = F.kind === 'in' ? 'Salaire, CAF, remboursement…' : 'Uber, Carrefour, cinéma…';
   },
   monthly: () => { F.monthly = !F.monthly; syncForm(); },
+  vary: () => { F.vary = !F.vary; syncForm(); },
+  'mf-keep': el => { MF.keep = !MF.keep; el.setAttribute('aria-checked', String(MF.keep)); },
+  'mf-save': () => saveMonth(),
+  'mf-reset': () => resetMonth(),
   freq: el => {
     const o = F.freq && F.freq[Number(el.dataset.i)];
     if (!o) return;
@@ -2268,7 +2414,7 @@ const ACTIONS = {
     const s = fixedSuggestions()[Number(el.dataset.i)];
     if (!s) return;
     const now = new Date(), start = s.thisMonth ? monthKey(now.getFullYear(), now.getMonth() + 1) : curMK();
-    commit(db => { db.rec.push({ id: uid(), kind: 'out', a: s.a, name: s.name, cat: s.cat, day: s.day, start, end: null }); });
+    commit(db => { db.rec.push({ id: uid(), kind: 'out', a: s.a, name: s.name, cat: s.cat, day: s.day, start, end: null, vary: false, ov: {} }); });
     toast(s.thisMonth ? 'Ajoutée aux fixes à partir du mois prochain' : 'Ajoutée aux dépenses fixes');
   },
   'toggle-budget': el => { const id = el.dataset.id; commit(db => { const c = db.cats.find(x => x.id === id); if (c) c.budget = c.budget === false; }); },
@@ -2341,6 +2487,7 @@ document.addEventListener('input', e => {
     clearTimeout(aiTimer);
     aiTimer = setTimeout(() => aiUpdate(true), 120);
   } else if (id === 'f-day' && F) F.day = t.value;
+  else if (id === 'm-amount' && MF) { MF.amount = t.value; fitAmount(t); const er = $('#f-err'); if (er) er.hidden = true; }
   else if (id === 'h-search' && HIST) {
     HIST.q = t.value;
     clearTimeout(aiTimer);
@@ -2403,6 +2550,7 @@ document.addEventListener('keydown', e => {
   if (e.target.id === 'f-amount') { e.preventDefault(); const d = $('#f-desc'); if (d) d.focus(); }
   else if (e.target.id === 'f-desc' || e.target.id === 'f-day') { e.preventDefault(); e.target.blur(); }
   else if (['s-limit', 's-save'].includes(e.target.id)) e.target.blur();
+  else if (e.target.id === 'm-amount') { e.preventDefault(); e.target.blur(); }
 });
 
 window.addEventListener('hashchange', () => { INTERNAL_NAV = true; render(); });
@@ -2412,6 +2560,7 @@ document.addEventListener('visibilitychange', () => {
   const away = HIDDEN_AT ? Date.now() - HIDDEN_AT : 0;
   if (away > 1500) markForeground();
   DB = readDB(); HIDE = !!DB.settings.hide; invalidate();
+  if (away >= 180e3) PROMPT_PENDING = true;
   if (away >= 180e3 && DB.settings.open === 'pay' && !isFormRoute(route()) && $('#modal').hidden) {
     LAUNCH = true; F = null; FORM_KEY = null;
     location.replace('#/ajouter');
@@ -2444,6 +2593,7 @@ function boot() {
     if (DB.settings.open === 'pay') { LAUNCH = true; history.replaceState(null, '', location.pathname + '#/ajouter'); }
     else history.replaceState(null, '', location.pathname + location.search + '#/');
   }
+  PROMPT_PENDING = true;
   markForeground();
   render();
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => fitAmount($('#f-amount')));
